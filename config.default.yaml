@@ -1,0 +1,13 @@
+---
+# 默认配置模板
+# 复制此文件为 config.local.yaml 后修改本地配置
+# config.local.yaml 不会被提交到仓库
+
+# 本地仓库路径（如需覆盖默认路径可在此设置）
+local_repo_path: ~/gpt-image-gen
+
+# Git 教学解说等级（beginner / intermediate / advanced）
+git_level: beginner
+
+# 其他本地偏好配置
+# default_reviewers: []

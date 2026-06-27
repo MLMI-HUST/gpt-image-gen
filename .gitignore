@@ -1,0 +1,30 @@
+# 测试输出文件
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+
+# 本地配置
+config.local.yaml
+*.local.yaml
+.env
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.temp
+*.log
