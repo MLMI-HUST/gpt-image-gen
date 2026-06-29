@@ -2,6 +2,8 @@
 name: gpt-image-gen
 description: 通过 OpenAI 官方直调或 ICU 中转站调用 GPT-Image-2 生成/编辑高质量图片。支持 base64 参考图编辑。零依赖 Node.js 脚本，同步接口，Base64 响应直接解码保存。
 agent_created: true
+owner: 谢弘毅
+status: stable
 ---
 
 # GPT-Image-2 图片生成 Skill
