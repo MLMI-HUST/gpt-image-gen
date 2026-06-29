@@ -443,6 +443,21 @@ function buildRequestBody() {
 }
 
 // ---- 主流程 ----
+async function sendRequest(fetchFn, url, options) {
+  const controller = new AbortController();
+  const FETCH_TIMEOUT_MS = 360_000; // 360s，适配复杂提示词
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const resp = await fetchFn(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return resp;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
 async function main() {
   const reqBody = buildRequestBody();
 
@@ -460,6 +475,15 @@ async function main() {
     }
   }
 
+  const requestOpts = {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(reqBody),
+  };
+
   console.log(`  模式: ${mode}${isEdit ? ' (编辑)' : ' (生图)'}`);
   console.log(`  端点: ${endpoint}`);
   console.log(`  模型: ${model}`);
@@ -473,34 +497,41 @@ async function main() {
 
   console.log(`\n正在请求图片生成...`);
 
+  // 首次尝试：使用解析出的 fetch 函数
   const doFetch = proxyAddress ? createProxyFetch(proxyAddress) : fetch;
 
   const start = Date.now();
-  const FETCH_TIMEOUT_MS = 360_000; // 360s，适配复杂提示词
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
   let resp;
   try {
-    resp = await doFetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(reqBody),
-      signal: controller.signal,
-    });
+    resp = await sendRequest(doFetch, endpoint, requestOpts);
   } catch (err) {
-    clearTimeout(timeoutId);
-    if (err.name === 'AbortError') {
-      console.error(`[ERROR] 本地超时 (${FETCH_TIMEOUT_MS / 1000}s) —— 服务端未响应也未返回 524`);
+    // 直连失败时，尝试自动降级为代理重试（仅 direct 模式且未使用代理时）
+    if (!proxyAddress && mode === 'direct') {
+      const detected = detectProxy();
+      if (detected) {
+        console.log(`  ⚠ 直连失败 (${err.message})，自动降级为代理: ${detected.address} (${detected.source})`);
+        const retryFetch = createProxyFetch(detected.address);
+        try {
+          resp = await sendRequest(retryFetch, endpoint, requestOpts);
+        } catch (err2) {
+          console.error(`[ERROR] 网络请求失败（代理重试）: ${err2.message}`);
+          console.error(`  原始错误: ${err.message}`);
+          process.exit(1);
+        }
+      } else {
+        console.error(`[ERROR] 网络请求失败: ${err.message}`);
+        console.error('  提示: 直连失败且未检测到代理，可通过 --proxy 手动指定');
+        process.exit(1);
+      }
     } else {
-      console.error(`[ERROR] 网络请求失败: ${err.message}`);
+      if (err.name === 'AbortError') {
+        console.error(`[ERROR] 本地超时 (360s) —— 服务端未响应`);
+      } else {
+        console.error(`[ERROR] 网络请求失败: ${err.message}`);
+      }
+      process.exit(1);
     }
-    process.exit(1);
   }
-  clearTimeout(timeoutId);
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
