@@ -37,6 +37,12 @@ import { request as httpsRequest } from 'https';
 import { connect as tlsConnect } from 'tls';
 import { execSync } from 'child_process';
 
+// ---- 代理地址规范化：无 scheme 时默认 http:// ----
+function normalizeProxyAddress(addr) {
+  if (!addr) return null;
+  return addr.includes('://') ? addr : `http://${addr}`;
+}
+
 // ---- 端点配置 ----
 const ENDPOINTS = {
   direct: {
@@ -307,7 +313,7 @@ API 模式:
     省略时自动判断：配置了 OPENAI_API_KEY 则优先 direct，否则 relay
 
 代理 (仅 direct 模式):
-  --proxy <host:port>   HTTP 代理地址，如 127.0.0.1:7890
+  --proxy <host:port>   HTTP 代理地址，如 127.0.0.1:7890 或 http://127.0.0.1:7890
                         省略时自动检测（环境变量 / 系统代理 / 进程）
   --no-proxy            禁用所有代理，直接连接目标服务器
 
@@ -470,9 +476,11 @@ async function main() {
   } else if (mode === 'direct' && !proxyAddress) {
     const detected = detectProxy();
     if (detected) {
-      proxyAddress = detected.address;
+      proxyAddress = normalizeProxyAddress(detected.address);
       proxySource = detected.source;
     }
+  } else if (proxyAddress) {
+    proxyAddress = normalizeProxyAddress(proxyAddress);
   }
 
   const requestOpts = {
