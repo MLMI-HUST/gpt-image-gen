@@ -524,18 +524,34 @@ async function main() {
         } catch (err2) {
           console.error(`[ERROR] 网络请求失败（代理重试）: ${err2.message}`);
           console.error(`  原始错误: ${err.message}`);
+          console.error('\n💡 请检查 VPN 连接：');
+          console.error('  1. VPN 是否已开启');
+          console.error('  2. 开启后当前节点是否通畅');
+          console.error('  3. 节点通畅但仍失败，请切换其他节点尝试');
+          console.error('  4. 或通过 --proxy 手动指定代理端口');
           process.exit(1);
         }
       } else {
         console.error(`[ERROR] 网络请求失败: ${err.message}`);
-        console.error('  提示: 直连失败且未检测到代理，可通过 --proxy 手动指定');
+        console.error('\n💡 请检查 VPN 连接：');
+        console.error('  1. VPN 是否已开启');
+        console.error('  2. 开启后当前节点是否通畅');
+        console.error('  3. 节点通畅但仍失败，请切换其他节点尝试');
+        console.error('  4. 或通过 --proxy 手动指定代理端口');
         process.exit(1);
       }
     } else {
       if (err.name === 'AbortError') {
         console.error(`[ERROR] 本地超时 (360s) —— 服务端未响应`);
+        console.error('\n💡 可能原因：');
+        console.error('  1. Prompt 过于复杂导致服务端处理超时');
+        console.error('  2. VPN 节点不稳定，尝试切换节点');
       } else {
         console.error(`[ERROR] 网络请求失败: ${err.message}`);
+        console.error('\n💡 请检查 VPN 连接：');
+        console.error('  1. VPN 是否已开启');
+        console.error('  2. 开启后当前节点是否通畅');
+        console.error('  3. 节点通畅但仍失败，请切换其他节点尝试');
       }
       process.exit(1);
     }
