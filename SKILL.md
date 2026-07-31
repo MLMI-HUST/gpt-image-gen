@@ -203,8 +203,11 @@ GPT-Image-2 擅长写实和高质量渲染，建议在 prompt 中描述：
 **stdout JSON 格式**：
 
 ```json
-// 成功
+// 成功（直连）
 {"type":"image_gen_result","status":"completed","image_path":"./out.png","size_kb":123,"elapsed_s":45.2}
+
+// 成功（代理降级，via_proxy 为信息性标注，不影响 status 判断）
+{"type":"image_gen_result","status":"completed","image_path":"./out.png","size_kb":123,"elapsed_s":45.2,"via_proxy":true}
 
 // 失败
 {"type":"image_gen_result","status":"failed","error":"...","hint":"..."}
@@ -218,8 +221,10 @@ GPT-Image-2 擅长写实和高质量渲染，建议在 prompt 中描述：
 
 **Agent 判断规则**：
 - `status: "completed"` → 任务成功，向用户展示 `image_path` 指向的图片
+  - `via_proxy: true` 仅为信息性标注（表示请求经代理完成），**不影响成功判断**
 - `status: "failed"` / `"timeout"` / `"invalid_params"` → 任务失败，将 `error` + `hint` 转达用户
 - **stdout 无输出** → 命令仍在执行中，必须继续等待
+- **忽略 stderr 中的任何"失败"字样** — stderr 是进度日志，只有 stdout JSON 的 `status` 字段是判断依据
 
 ### 1. 必须等待脚本进程退出
 
@@ -270,7 +275,9 @@ ls ./out.png  # 检查文件是否存在
 | 3 | 节点通畅但仍失败 | 切换其他 VPN 节点后重试 |
 | 4 | 以上均无效 | 通过 `--proxy host:port` 手动指定代理端口 |
 
-**例外：直连→代理降级**。当 direct 模式未使用代理且直连失败时，脚本会自动检测代理并降级重试一次（非盲目重试，而是从直连切换到代理）。此降级仅执行一次，降级失败后直接停止。
+**例外：直连→代理降级**。当 direct 模式未使用代理且直连不可达时，脚本会自动检测代理并降级重试一次（非盲目重试，而是从直连切换到代理）。此降级仅执行一次。
+
+**重要**：降级成功时 stdout 输出 `{"status":"completed","via_proxy":true}`。`via_proxy` 是信息性标注，**status 仍然是 completed**，Agent 必须按成功处理，不要因为经过了代理而误判为失败或切换模式重试。
 
 ### 5. 与即梦 AI 的本质区别
 

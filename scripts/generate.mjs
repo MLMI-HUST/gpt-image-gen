@@ -8,6 +8,7 @@
  *
  * stdout JSON 格式:
  *   成功: {"type":"image_gen_result","status":"completed","image_path":"...","size_kb":123,"elapsed_s":45.2}
+ *   成功(代理降级): {"type":"image_gen_result","status":"completed","image_path":"...","size_kb":123,"elapsed_s":45.2,"via_proxy":true}
  *   失败: {"type":"image_gen_result","status":"failed","error":"...","hint":"..."}
  *   超时: {"type":"image_gen_result","status":"timeout","error":"...","hint":"..."}
  *   参数错误: {"type":"image_gen_result","status":"invalid_params","error":"..."}
@@ -484,6 +485,7 @@ async function main() {
 
   const start = Date.now();
   let resp;
+  let usedFallback = false;
   try {
     resp = await sendRequest(doFetch, endpoint, requestOpts);
   } catch (err) {
@@ -491,10 +493,11 @@ async function main() {
     if (!proxyAddress && mode === 'direct') {
       const detected = detectProxy();
       if (detected) {
-        log(`  ⚠ 直连失败 (${err.message})，自动降级为代理: ${detected.address} (${detected.source})`);
+        log(`  ℹ 正在通过代理连接 API: ${detected.address} (${detected.source})`);
         const retryFetch = createProxyFetch(detected.address);
         try {
           resp = await sendRequest(retryFetch, endpoint, requestOpts);
+          usedFallback = true;
         } catch (err2) {
           result({ type: 'image_gen_result', status: 'failed', error: `网络请求失败（代理重试）: ${err2.message}`, detail: `原始错误: ${err.message}`, hint: VPN_HINT }, 1);
         }
@@ -545,13 +548,17 @@ async function main() {
   log(`\n✅ 图片已保存: ${savePath} (${(stats.size / 1024).toFixed(0)} KB, 耗时 ${elapsed}s)`);
 
   // ---- stdout 输出结构化 JSON 结果 ----
-  result({
+  const successResult = {
     type: 'image_gen_result',
     status: 'completed',
     image_path: savePath,
     size_kb: Math.round(stats.size / 1024),
     elapsed_s: parseFloat(elapsed),
-  });
+  };
+  if (usedFallback) {
+    successResult.via_proxy = true;
+  }
+  result(successResult);
 }
 
 main();
