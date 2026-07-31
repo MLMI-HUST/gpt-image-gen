@@ -2,32 +2,23 @@
 /**
  * GPT-Image-2 图片生成脚本
  *
+ * 输出协议（学习 WorkBuddy 官方 ImageGen 工具设计）:
+ *   stdout = 结构化 JSON 结果（唯一给 LLM 的 Observation 主体）
+ *   stderr = 人类可读进度日志（不影响 LLM 判断）
+ *
+ * stdout JSON 格式:
+ *   成功: {"type":"image_gen_result","status":"completed","image_path":"...","size_kb":123,"elapsed_s":45.2}
+ *   成功(代理降级): {"type":"image_gen_result","status":"completed","image_path":"...","size_kb":123,"elapsed_s":45.2,"via_proxy":true}
+ *   失败: {"type":"image_gen_result","status":"failed","error":"...","hint":"..."}
+ *   超时: {"type":"image_gen_result","status":"timeout","error":"...","hint":"..."}
+ *   参数错误: {"type":"image_gen_result","status":"invalid_params","error":"..."}
+ *
  * 支持两种 API 模式：
  *   --mode direct   OpenAI 官方直调 (api.openai.com)
  *   --mode relay    ICU 中转站 (rehdasu.cn)
  *   未指定时自动判断：配置了 OPENAI_API_KEY 则优先 direct，否则 relay
  *
- * 支持两种生成模式：
- *   文生图：--prompt "描述"
- *   图生图：--edit --reference ./ref.png --prompt "修改描述"
- *
- * 用法:
- *   # 官方直调文生图（配置了 OPENAI_API_KEY 时默认）
- *   export OPENAI_API_KEY="sk-xxxxxx"
- *   node generate.mjs --prompt "描述" --save ./output.png
- *
- *   # 中转站文生图（配置了 GPT_IMAGE_API_KEY 且无 OPENAI_API_KEY 时默认）
- *   export GPT_IMAGE_API_KEY="sk-xxxxxx"
- *   node generate.mjs --prompt "描述" --save ./output.png
- *
- *   # 手动强制指定模式（覆盖自动判断）
- *   node generate.mjs --mode relay --prompt "描述" --save ./output.png
- *   node generate.mjs --mode direct --prompt "描述" --save ./output.png
- *
- *   # 官方直调图生图（base64 参考图）
- *   node generate.mjs --edit --reference ./photo.png --prompt "改背景" --save ./out.png
- *
- * 零依赖，纯 Node.js 内置模块 (fetch + Buffer + fs + path + net + https + tls + child_process)
+ * 零依赖，纯 Node.js 内置模块
  */
 
 import { readFileSync, writeFileSync, statSync } from 'fs';
@@ -36,6 +27,13 @@ import { connect } from 'net';
 import { request as httpsRequest } from 'https';
 import { connect as tlsConnect } from 'tls';
 import { execSync } from 'child_process';
+
+// ---- 统一输出函数：stdout = JSON 结果，stderr = 进度日志 ----
+function log(msg)  { console.error(msg); }           // 进度日志 → stderr
+function result(obj, exitCode = 0) {                  // 最终结果 → stdout
+  console.log(JSON.stringify(obj));
+  process.exit(exitCode);
+}
 
 // ---- 代理地址规范化：无 scheme 时默认 http:// ----
 function normalizeProxyAddress(addr) {
@@ -76,7 +74,7 @@ function detectProxy() {
   if (process.platform === 'darwin') {
     try {
       const services = execSync('networksetup -listallnetworkservices 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-      const lines = services.split('\n').slice(1); // 跳过首行说明
+      const lines = services.split('\n').slice(1);
       for (const service of lines) {
         const s = service.trim();
         if (!s || s.startsWith('*')) continue;
@@ -112,11 +110,9 @@ function detectProxy() {
     try {
       const ps = execSync('ps aux 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
       if (ps.includes('clash-verge')) {
-        // Clash Verge 默认 HTTP 端口 7897
         return { source: 'Clash Verge 进程', address: '127.0.0.1:7897' };
       }
       if (ps.includes('clash') || ps.includes('Clash')) {
-        // Clash / ClashX 默认 HTTP 7890
         return { source: 'Clash 进程', address: '127.0.0.1:7890' };
       }
       if (ps.includes('v2ray')) {
@@ -174,7 +170,6 @@ function createProxyFetch(proxyStr) {
         tcpSocket.write(`CONNECT ${target.host}:443 HTTP/1.1\r\nHost: ${target.host}:443\r\n\r\n`);
       });
 
-      // Accumulate data until we find the end of the HTTP CONNECT response.
       let buffer = Buffer.alloc(0);
       let resolved = false;
 
@@ -208,14 +203,11 @@ function createProxyFetch(proxyStr) {
           return;
         }
 
-        // Push any bytes after \r\n\r\n back so TLS reads them first.
         const remaining = buffer.slice(headerEnd + 4);
         if (remaining.length > 0) {
           tcpSocket.unshift(remaining);
         }
 
-        // Upgrade the TCP socket to TLS.  Do NOT pause — tls.connect
-        // needs the socket readable to perform its own handshake.
         const tlsSocket = tlsConnect({
           socket: tcpSocket,
           servername: target.hostname,
@@ -293,7 +285,7 @@ const background  = getArg('--background') || null;
 const proxy       = getArg('--proxy');
 const noProxy     = hasFlag('--no-proxy');
 
-// ---- 帮助信息 ----
+// ---- 帮助信息（纯文本到 stdout，非生成结果） ----
 if (showHelp || !prompt) {
   console.log(`GPT-Image-2 图片生成
 
@@ -331,6 +323,13 @@ API 模式:
   OPENAI_API_KEY        官方直调 API Key (存在时默认启用 direct)
   GPT_IMAGE_API_KEY     中转站 API Key (无 OPENAI_API_KEY 时默认启用 relay)
 
+输出协议:
+  stdout = 结构化 JSON 结果（给 LLM 解析）
+  stderr = 人类可读进度日志（不影响 LLM 判断）
+
+  成功: {"type":"image_gen_result","status":"completed","image_path":"...","size_kb":N,"elapsed_s":N}
+  失败: {"type":"image_gen_result","status":"failed","error":"...","hint":"..."}
+
 示例:
   # 官方直调文生图 (配置了 OPENAI_API_KEY 时默认)
   node generate.mjs --prompt "一只猫在太空" --save ./cat.png
@@ -338,37 +337,23 @@ API 模式:
   # 中转站文生图 (配置了 GPT_IMAGE_API_KEY 时默认)
   node generate.mjs --prompt "一只猫在太空" --save ./cat.png
 
-  # 手动强制指定 relay 模式（覆盖自动判断）
-  node generate.mjs --mode relay --prompt "一只猫在太空" --save ./cat.png
-
-  # 官方直调文生图 (手动指定代理)
-  node generate.mjs --mode direct --proxy 127.0.0.1:7897 \\
-    --prompt "一只猫在太空" --save ./cat.png
-
-  # 官方直调文生图 (禁用代理直接连接)
-  node generate.mjs --mode direct --no-proxy \\
-    --prompt "一只猫在太空" --save ./cat.png
-
   # 官方直调图生图 (base64 参考图编辑)
   node generate.mjs --edit \\
     --reference ./photo.png --prompt "将背景替换为纯白色" --save ./edited.png`);
   process.exit(showHelp ? 0 : 1);
 }
 
-// ---- 基础校验 ----
+// ---- 基础校验（参数错误输出 JSON 到 stdout） ----
 if (!savePath) {
-  console.error('[ERROR] 缺少 --save 参数');
-  process.exit(1);
+  result({ type: 'image_gen_result', status: 'invalid_params', error: '缺少 --save 参数' }, 1);
 }
 
 if (mode !== 'direct' && mode !== 'relay') {
-  console.error(`[ERROR] 无效的 --mode: ${mode}，仅支持 direct 或 relay`);
-  process.exit(1);
+  result({ type: 'image_gen_result', status: 'invalid_params', error: `无效的 --mode: ${mode}，仅支持 direct 或 relay` }, 1);
 }
 
 if (isEdit && !reference) {
-  console.error('[ERROR] --edit 模式下必须提供 --reference <路径>');
-  process.exit(1);
+  result({ type: 'image_gen_result', status: 'invalid_params', error: '--edit 模式下必须提供 --reference <路径>' }, 1);
 }
 
 // ---- API Key 选择 ----
@@ -376,16 +361,12 @@ let API_KEY;
 if (mode === 'direct') {
   API_KEY = process.env.OPENAI_API_KEY;
   if (!API_KEY) {
-    console.error('[ERROR] direct 模式需要设置环境变量 OPENAI_API_KEY');
-    console.error('请先执行: export OPENAI_API_KEY="sk-xxxxxx"');
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'invalid_params', error: 'direct 模式需要设置环境变量 OPENAI_API_KEY', hint: '请先执行: export OPENAI_API_KEY="sk-xxxxxx"' }, 1);
   }
 } else {
   API_KEY = process.env.GPT_IMAGE_API_KEY;
   if (!API_KEY) {
-    console.error('[ERROR] relay 模式需要设置环境变量 GPT_IMAGE_API_KEY');
-    console.error('请先执行: export GPT_IMAGE_API_KEY="sk-xxxxxx"');
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'invalid_params', error: 'relay 模式需要设置环境变量 GPT_IMAGE_API_KEY', hint: '请先执行: export GPT_IMAGE_API_KEY="sk-xxxxxx"' }, 1);
   }
 }
 
@@ -398,16 +379,12 @@ function imageToDataURI(filePath) {
   try {
     buffer = readFileSync(filePath);
   } catch (err) {
-    console.error(`[ERROR] 无法读取参考图: ${filePath}`);
-    console.error(`  ${err.message}`);
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: `无法读取参考图: ${filePath}`, detail: err.message }, 1);
   }
 
   if (buffer.length > MAX_REFERENCE_SIZE) {
     const sizeMB = (buffer.length / 1024 / 1024).toFixed(1);
-    console.error(`[ERROR] 参考图过大: ${sizeMB} MB (限制 ${MAX_REFERENCE_SIZE / 1024 / 1024} MB)`);
-    console.error('  请压缩图片后重试');
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: `参考图过大: ${sizeMB} MB (限制 ${MAX_REFERENCE_SIZE / 1024 / 1024} MB)`, hint: '请压缩图片后重试' }, 1);
   }
 
   const b64 = buffer.toString('base64');
@@ -425,23 +402,20 @@ function buildRequestBody() {
     size: size,
   };
 
-  // 图生图: 附加 base64 参考图
   if (isEdit) {
     const dataURI = imageToDataURI(reference);
     base.images = [{ image_url: dataURI }];
   }
 
-  // 输出格式 (非默认时传入)
   if (format !== 'png') {
     base.output_format = format;
   }
 
-  // 透明背景 (仅 direct 模式支持)
   if (background === 'transparent') {
     if (mode === 'direct') {
       base.background = 'transparent';
     } else {
-      console.warn('[WARN] relay 模式可能不支持透明背景，已忽略 --background 参数');
+      log('[WARN] relay 模式可能不支持透明背景，已忽略 --background 参数');
     }
   }
 
@@ -451,7 +425,7 @@ function buildRequestBody() {
 // ---- 主流程 ----
 async function sendRequest(fetchFn, url, options) {
   const controller = new AbortController();
-  const FETCH_TIMEOUT_MS = 360_000; // 360s，适配复杂提示词
+  const FETCH_TIMEOUT_MS = 360_000; // 360s
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
   try {
@@ -463,6 +437,8 @@ async function sendRequest(fetchFn, url, options) {
     throw err;
   }
 }
+
+const VPN_HINT = '请检查 VPN 连接：1.VPN是否已开启 2.当前节点是否通畅 3.切换其他节点尝试 4.或通过 --proxy 手动指定代理端口';
 
 async function main() {
   const reqBody = buildRequestBody();
@@ -492,24 +468,24 @@ async function main() {
     body: JSON.stringify(reqBody),
   };
 
-  console.log(`  模式: ${mode}${isEdit ? ' (编辑)' : ' (生图)'}`);
-  console.log(`  端点: ${endpoint}`);
-  console.log(`  模型: ${model}`);
-  console.log(`  质量: ${quality}  |  尺寸: ${size}`);
-  if (format !== 'png') console.log(`  格式: ${format}`);
-  if (background) console.log(`  背景: ${background}`);
-  if (proxyAddress && mode === 'direct') console.log(`  代理: ${proxyAddress} (${proxySource})`);
-  if (isEdit) console.log(`  参考图: ${basename(reference)}`);
-  console.log(`  Prompt 长度: ${prompt.length} 字符`);
-  console.log(`  输出: ${savePath}`);
+  // ---- 进度信息全部输出到 stderr ----
+  log(`  模式: ${mode}${isEdit ? ' (编辑)' : ' (生图)'}`);
+  log(`  端点: ${endpoint}`);
+  log(`  模型: ${model}`);
+  log(`  质量: ${quality}  |  尺寸: ${size}`);
+  if (format !== 'png') log(`  格式: ${format}`);
+  if (background) log(`  背景: ${background}`);
+  if (proxyAddress && mode === 'direct') log(`  代理: ${proxyAddress} (${proxySource})`);
+  if (isEdit) log(`  参考图: ${basename(reference)}`);
+  log(`  Prompt 长度: ${prompt.length} 字符`);
+  log(`  输出: ${savePath}`);
+  log(`\n正在请求图片生成...`);
 
-  console.log(`\n正在请求图片生成...`);
-
-  // 首次尝试：使用解析出的 fetch 函数
   const doFetch = proxyAddress ? createProxyFetch(proxyAddress) : fetch;
 
   const start = Date.now();
   let resp;
+  let usedFallback = false;
   try {
     resp = await sendRequest(doFetch, endpoint, requestOpts);
   } catch (err) {
@@ -517,27 +493,23 @@ async function main() {
     if (!proxyAddress && mode === 'direct') {
       const detected = detectProxy();
       if (detected) {
-        console.log(`  ⚠ 直连失败 (${err.message})，自动降级为代理: ${detected.address} (${detected.source})`);
+        log(`  ℹ 正在通过代理连接 API: ${detected.address} (${detected.source})`);
         const retryFetch = createProxyFetch(detected.address);
         try {
           resp = await sendRequest(retryFetch, endpoint, requestOpts);
+          usedFallback = true;
         } catch (err2) {
-          console.error(`[ERROR] 网络请求失败（代理重试）: ${err2.message}`);
-          console.error(`  原始错误: ${err.message}`);
-          process.exit(1);
+          result({ type: 'image_gen_result', status: 'failed', error: `网络请求失败（代理重试）: ${err2.message}`, detail: `原始错误: ${err.message}`, hint: VPN_HINT }, 1);
         }
       } else {
-        console.error(`[ERROR] 网络请求失败: ${err.message}`);
-        console.error('  提示: 直连失败且未检测到代理，可通过 --proxy 手动指定');
-        process.exit(1);
+        result({ type: 'image_gen_result', status: 'failed', error: `网络请求失败: ${err.message}`, hint: VPN_HINT }, 1);
       }
     } else {
       if (err.name === 'AbortError') {
-        console.error(`[ERROR] 本地超时 (360s) —— 服务端未响应`);
+        result({ type: 'image_gen_result', status: 'timeout', error: '本地超时 (360s) —— 服务端未响应', hint: '1. Prompt 过于复杂导致服务端处理超时 2. VPN 节点不稳定，尝试切换节点' }, 1);
       } else {
-        console.error(`[ERROR] 网络请求失败: ${err.message}`);
+        result({ type: 'image_gen_result', status: 'failed', error: `网络请求失败: ${err.message}`, hint: VPN_HINT }, 1);
       }
-      process.exit(1);
     }
   }
 
@@ -545,29 +517,23 @@ async function main() {
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
-    console.error(`[ERROR] HTTP ${resp.status} ${resp.statusText}`);
-    if (errText) console.error(`  响应: ${errText.slice(0, 500)}`);
-
-    // 中转站 edits 端点可能不支持，给出提示
+    let hint = '';
     if (isEdit && mode === 'relay' && (resp.status === 404 || resp.status === 400)) {
-      console.error('\n💡 中转站可能不支持图像编辑端点，请尝试 --mode direct');
+      hint = '中转站可能不支持图像编辑端点，请尝试 --mode direct';
     }
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: `HTTP ${resp.status} ${resp.statusText}`, detail: errText.slice(0, 500), hint }, 1);
   }
 
   let json;
   try {
     json = await resp.json();
   } catch (err) {
-    console.error('[ERROR] 响应不是有效 JSON');
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: '响应不是有效 JSON' }, 1);
   }
 
   const b64 = json?.data?.[0]?.b64_json;
   if (!b64) {
-    console.error('[ERROR] 响应中未找到 b64_json 字段');
-    console.error(`  实际响应: ${JSON.stringify(json).slice(0, 300)}`);
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: '响应中未找到 b64_json 字段', detail: JSON.stringify(json).slice(0, 300) }, 1);
   }
 
   // 解码 Base64 并写入文件
@@ -575,12 +541,24 @@ async function main() {
     const buffer = Buffer.from(b64, 'base64');
     writeFileSync(savePath, buffer);
   } catch (err) {
-    console.error(`[ERROR] 写入文件失败: ${err.message}`);
-    process.exit(1);
+    result({ type: 'image_gen_result', status: 'failed', error: `写入文件失败: ${err.message}` }, 1);
   }
 
   const stats = statSync(savePath);
-  console.log(`\n✅ 图片已保存: ${savePath} (${(stats.size / 1024).toFixed(0)} KB, 耗时 ${elapsed}s)`);
+  log(`\n✅ 图片已保存: ${savePath} (${(stats.size / 1024).toFixed(0)} KB, 耗时 ${elapsed}s)`);
+
+  // ---- stdout 输出结构化 JSON 结果 ----
+  const successResult = {
+    type: 'image_gen_result',
+    status: 'completed',
+    image_path: savePath,
+    size_kb: Math.round(stats.size / 1024),
+    elapsed_s: parseFloat(elapsed),
+  };
+  if (usedFallback) {
+    successResult.via_proxy = true;
+  }
+  result(successResult);
 }
 
 main();

@@ -191,16 +191,51 @@ GPT-Image-2 擅长写实和高质量渲染，建议在 prompt 中描述：
 
 > **重要**：本脚本是同步阻塞调用，Agent 执行时必须遵守以下规则，避免提前中断或无效轮询。
 
+### 0. 输出协议（Agent 判断任务状态的唯一依据）
+
+脚本采用 **stdout/stderr 分离设计**（学习 WorkBuddy 官方 ImageGen 工具）：
+
+| 流 | 内容 | Agent 应关注 |
+|---|---|---|
+| **stdout** | 结构化 JSON 结果（唯一给 LLM 的 Observation 主体） | ✅ 解析 `status` 字段 |
+| **stderr** | 人类可读进度日志（模式/端点/代理/进度等） | ❌ 仅日志，不影响判断 |
+
+**stdout JSON 格式**：
+
+```json
+// 成功（直连）
+{"type":"image_gen_result","status":"completed","image_path":"./out.png","size_kb":123,"elapsed_s":45.2}
+
+// 成功（代理降级，via_proxy 为信息性标注，不影响 status 判断）
+{"type":"image_gen_result","status":"completed","image_path":"./out.png","size_kb":123,"elapsed_s":45.2,"via_proxy":true}
+
+// 失败
+{"type":"image_gen_result","status":"failed","error":"...","hint":"..."}
+
+// 超时
+{"type":"image_gen_result","status":"timeout","error":"...","hint":"..."}
+
+// 参数错误
+{"type":"image_gen_result","status":"invalid_params","error":"..."}
+```
+
+**Agent 判断规则**：
+- `status: "completed"` → 任务成功，向用户展示 `image_path` 指向的图片
+  - `via_proxy: true` 仅为信息性标注（表示请求经代理完成），**不影响成功判断**
+- `status: "failed"` / `"timeout"` / `"invalid_params"` → 任务失败，将 `error` + `hint` 转达用户
+- **stdout 无输出** → 命令仍在执行中，必须继续等待
+- **忽略 stderr 中的任何"失败"字样** — stderr 是进度日志，只有 stdout JSON 的 `status` 字段是判断依据
+
 ### 1. 必须等待脚本进程退出
 
 ```
 node generate.mjs --prompt "..." --save ./out.png
 ```
 
-- 上述命令会**阻塞直到图片生成完成**，不要看到"正在请求图片生成..."就中断对话
-- 脚本成功时会输出 `✅ 图片已保存: ./out.png (XXX KB, 耗时 X.Xs)`，此时才算完成
-- 失败时会输出 `[ERROR] ...` 并 `process.exit(1)`，此时才算结束
+- 上述命令会**阻塞直到图片生成完成**（最长 360s）
+- 脚本退出前 stdout 不会有任何输出——这是**正常的**，不代表任务失败
 - **不要中途停止或开新对话**，等进程自然结束
+- 进程退出后，解析 stdout 中的 JSON `status` 字段判断结果
 
 ### 2. 禁止轮询
 
@@ -209,29 +244,58 @@ node generate.mjs --prompt "..." --save ./out.png
 - 不要执行类似 "检查图片是否生成完成" 的额外操作
 - 单次 `node generate.mjs` 调用即完成全部工作
 
+**❌ 错误模式（绝对禁止）**：
+```bash
+# 以下模式会创建全新进程，不会查询到任何状态
+sleep 10 && node generate.mjs --prompt "..." --save ./out.png
+ls ./out.png  # 检查文件是否存在
+```
+
 ### 3. 超时处理
 
 - 脚本内置 360s 超时保护（AbortController）
-- 如果超时，脚本会输出 `[ERROR] 本地超时 (360s)` 并退出
-- 此时应向用户报告超时，不要尝试重试或轮询
+- 超时时 stdout 输出 `{"status":"timeout",...}` 并退出
+- 此时应向用户报告超时，**不要尝试重试或轮询**
 
-### 4. 与即梦 AI 的本质区别
+### 4. 网络请求失败处理
+
+> **核心原则：遇到网络请求失败，直接停止生图任务，不盲目重试。**
+
+当 stdout JSON 的 `status` 为 `"failed"` 时，**不要**：
+- ❌ 自动重试同一请求
+- ❌ 切换参数后重试
+- ❌ 轮询检查网络是否恢复
+
+**应该**：将 JSON 中的 `error` 和 `hint` 字段转达给用户，引导用户检查 VPN：
+
+| 步骤 | 检查内容 | 操作 |
+|------|----------|------|
+| 1 | VPN 是否已开启 | 确认 VPN 软件（如 Clash Verge）正在运行 |
+| 2 | 当前节点是否通畅 | 在浏览器中打开 `https://api.openai.com` 确认能访问 |
+| 3 | 节点通畅但仍失败 | 切换其他 VPN 节点后重试 |
+| 4 | 以上均无效 | 通过 `--proxy host:port` 手动指定代理端口 |
+
+**例外：直连→代理降级**。当 direct 模式未使用代理且直连不可达时，脚本会自动检测代理并降级重试一次（非盲目重试，而是从直连切换到代理）。此降级仅执行一次。
+
+**重要**：降级成功时 stdout 输出 `{"status":"completed","via_proxy":true}`。`via_proxy` 是信息性标注，**status 仍然是 completed**，Agent 必须按成功处理，不要因为经过了代理而误判为失败或切换模式重试。
+
+### 5. 与即梦 AI 的本质区别
 
 | 行为 | GPT-Image-2（本 skill） | 即梦 AI |
 |------|------------------------|---------|
 | 调用方式 | 一次 `node` 命令，阻塞等待 | 创建任务 → 轮询 task_id |
-| Agent 应该 | 等进程退出 | 轮询状态 |
-| 完成标志 | `✅ 图片已保存` | 状态变为 "success" |
+| Agent 应该 | 等进程退出，解析 stdout JSON | 轮询状态 |
+| 完成标志 | stdout `{"status":"completed"}` | 状态变为 "success" |
 | 是否需要额外查询 | ❌ 否 | ✅ 是 |
 
-### 5. 典型执行流程（Agent 参考）
+### 6. 典型执行流程（Agent 参考）
 
 ```
 1. 构建命令: node generate.mjs --prompt "..." --save ./out.png
-2. 执行命令，等待进程退出
-3. 检查退出码 + 输出内容
-   - 包含 "✅ 图片已保存" → 成功，向用户展示图片
-   - 包含 "[ERROR]" → 失败，向用户报告错误
+2. 执行命令，等待进程退出（最长 360s，期间 stdout 无输出是正常的）
+3. 解析 stdout JSON 的 status 字段:
+   - "completed" → 成功，向用户展示 image_path 指向的图片
+   - "failed" / "timeout" / "invalid_params" → 失败，将 error + hint 转达用户
 4. 结束，不要执行任何额外查询/轮询操作
 ```
 
@@ -247,6 +311,6 @@ node generate.mjs --prompt "..." --save ./out.png
 ## 超时机制
 
 - **服务端超时**：Cloudflare HTTP 524（~100s，最常见），复杂中文信息图 Prompt 触发概率高
-- **本地兜底**：脚本内置 AbortController 150s 超时保护
-- **Bash 兜底**：调用侧 300s 超时（最高层保护）
+- **本地兜底**：脚本内置 AbortController 360s 超时保护
+- **Bash 兜底**：调用侧超时（最高层保护，取决于调用方配置）
 - 详见 mods-pptx skill 的 GPT-Image-2 超时应对策
