@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * GPT-Image-2 图片生成脚本
+ * GPT-Image 图片生成脚本（支持 gpt-image-2.5-flare / 2.5-sunburst / 2 等模型）
+ *
+ * 默认模型: gpt-image-2.5-flare（OpenAI 最新发布的图生图/文生图模型）
+ * 通过 --model 参数可切换: gpt-image-2.5-flare / gpt-image-2.5-sunburst / gpt-image-2
  *
  * 输出协议（学习 WorkBuddy 官方 ImageGen 工具设计）:
  *   stdout = 结构化 JSON 结果（唯一给 LLM 的 Observation 主体）
@@ -277,7 +280,7 @@ if (!mode) {
 
 const isEdit      = hasFlag('--edit');
 const reference   = getArg('--reference');
-const model       = getArg('--model') || 'gpt-image-2';
+const model       = getArg('--model') || 'gpt-image-2.5-flare';
 const quality     = getArg('--quality') || 'auto';
 const size        = getArg('--size') || '1024x1024';
 const format      = getArg('--format') || 'png';
@@ -287,7 +290,7 @@ const noProxy     = hasFlag('--no-proxy');
 
 // ---- 帮助信息（纯文本到 stdout，非生成结果） ----
 if (showHelp || !prompt) {
-  console.log(`GPT-Image-2 图片生成
+  console.log(`GPT-Image 图片生成（默认 gpt-image-2.5-flare）
 
 用法:
   node generate.mjs --prompt "描述" --save ./output.png [选项]
@@ -295,7 +298,8 @@ if (showHelp || !prompt) {
 参数:
   --prompt <文字>       图片描述提示词 (必填)
   --save <路径>         输出文件路径 (必填)
-  --model <名称>        模型名称 (默认: gpt-image-2)
+  --model <名称>        模型名称 (默认: gpt-image-2.5-flare)
+                          可选: gpt-image-2.5-flare / gpt-image-2.5-sunburst / gpt-image-2
   --help, -h            显示帮助
 
 API 模式:
