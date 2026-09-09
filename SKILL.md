@@ -1,25 +1,47 @@
 ---
 name: gpt-image-gen
-description: 通过 OpenAI 官方直调或 ICU 中转站调用 GPT-Image-2 生成/编辑高质量图片。支持 base64 参考图编辑。零依赖 Node.js 脚本，同步接口，Base64 响应直接解码保存。
+description: 通过 OpenAI 官方直调或 ICU 中转站调用 GPT-Image 系列模型（默认 gpt-image-2.5-flare，可选 gpt-image-2.5-sunburst / gpt-image-2）生成/编辑高质量图片。支持 base64 参考图编辑。零依赖 Node.js 脚本，同步接口，Base64 响应直接解码保存。
 agent_created: true
 owner: 谢弘毅
 status: stable
 ---
 
-# GPT-Image-2 图片生成 Skill
+# GPT-Image 图片生成 Skill
 
-支持双模式调用 GPT-Image-2 模型：
+支持双模式调用 GPT-Image 系列模型（默认 `gpt-image-2.5-flare`）：
 - **direct**：OpenAI 官方直调（配置了 `OPENAI_API_KEY` 时默认启用）
 - **relay**：ICU 中转站（rehdasu.cn，无官方 Key 时回退）
 
 模式自动判断：`OPENAI_API_KEY` 存在时优先 direct，否则 relay。可通过 `--mode` 手动覆盖。
 
+## 可选模型
+
+| 模型 ID | 说明 | 默认 |
+|---------|------|------|
+| `gpt-image-2.5-flare` | OpenAI 最新发布，高质量写实/编辑，推荐默认 | **✅ 默认** |
+| `gpt-image-2.5-sunburst` | OpenAI 最新发布，其他特性详见 OpenAI 官方说明 | |
+| `gpt-image-2` | 上代模型，怀旧/兼容场景可用 | |
+
+通过 `--model` 参数手动切换：
+```bash
+# 使用默认 flare
+node {baseDir}/scripts/generate.mjs --prompt "..." --save ./out.png
+
+# 切换为 sunburst
+node {baseDir}/scripts/generate.mjs --model gpt-image-2.5-sunburst --prompt "..." --save ./out.png
+
+# 切换为上代 gpt-image-2
+node {baseDir}/scripts/generate.mjs --model gpt-image-2 --prompt "..." --save ./out.png
+```
+
+> 中转站（relay）是否支持新模型取决于中转站方的部署进度，如遇 `model not found` 错误，请改用 `--mode direct` 或退回 `--model gpt-image-2`。
+
 ## 触发条件
 
 用户提出以下任一需求时触发：
-- "用 GPT-Image-2 生成图片"
+- "用 GPT-Image 生成图片" / "用 gpt-image 生图"
 - "用 openai 生图" / "openai 直调生图"
-- "用 image-2 生图" / "调用中转站生图"
+- "用 flare 生图" / "用 sunburst 生图" / "用 image-2 生图" / "调用中转站生图"
 - "编辑这张图" / "用参考图生图"（需配合图片编辑模式）
 - 需要高质量、写实风格的图片生成
 
@@ -76,7 +98,7 @@ node {baseDir}/scripts/generate.mjs --edit \
 |------|------|------|
 | `--prompt` | 是 | 图片描述提示词，中英文均可，最长 32,000 字符 |
 | `--save` | 是 | 输出文件路径（建议 `.png`） |
-| `--model` | 否 | 模型名称，默认 `gpt-image-2` |
+| `--model` | 否 | 模型名称，默认 `gpt-image-2.5-flare`；可选 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` / `gpt-image-2` |
 | `--help, -h` | 否 | 显示帮助 |
 
 ### API 模式
@@ -121,7 +143,7 @@ node {baseDir}/scripts/generate.mjs --edit \
 
 ## 与即梦 AI 的对比
 
-| 维度 | GPT-Image-2 | 即梦 AI 4.6 |
+| 维度 | GPT-Image 系列（本 skill） | 即梦 AI 4.6 |
 |------|------------|------------|
 | 接口类型 | **同步**（直接返回 Base64） | 异步（需轮询 task_id） |
 | 响应速度 | 快（无需轮询） | 慢（创建任务 + 轮询 ~10-30s） |
@@ -132,7 +154,7 @@ node {baseDir}/scripts/generate.mjs --edit \
 
 ## Prompt 写作建议
 
-GPT-Image-2 擅长写实和高质量渲染，建议在 prompt 中描述：
+GPT-Image 系列擅长写实和高质量渲染，建议在 prompt 中描述：
 - 主体是什么
 - 场景/背景在哪里
 - 风格（写实/插画/极简/商业）
@@ -168,7 +190,7 @@ GPT-Image-2 擅长写实和高质量渲染，建议在 prompt 中描述：
 ### 图生图请求体示例
 ```json
 {
-  "model": "gpt-image-2",
+  "model": "gpt-image-2.5-flare",
   "images": [{"image_url": "data:image/png;base64,iVBORw0KGgoAAAA..."}],
   "prompt": "将背景替换为纯白色",
   "size": "1024x1024",
@@ -217,7 +239,7 @@ node generate.mjs --prompt "..." --save ./out.png
 
 ### 4. 与即梦 AI 的本质区别
 
-| 行为 | GPT-Image-2（本 skill） | 即梦 AI |
+| 行为 | GPT-Image 系列（本 skill） | 即梦 AI |
 |------|------------------------|---------|
 | 调用方式 | 一次 `node` 命令，阻塞等待 | 创建任务 → 轮询 task_id |
 | Agent 应该 | 等进程退出 | 轮询状态 |
@@ -249,4 +271,4 @@ node generate.mjs --prompt "..." --save ./out.png
 - **服务端超时**：Cloudflare HTTP 524（~100s，最常见），复杂中文信息图 Prompt 触发概率高
 - **本地兜底**：脚本内置 AbortController 150s 超时保护
 - **Bash 兜底**：调用侧 300s 超时（最高层保护）
-- 详见 mods-pptx skill 的 GPT-Image-2 超时应对策
+- 详见 mods-pptx skill 的 GPT-Image 超时应对策
