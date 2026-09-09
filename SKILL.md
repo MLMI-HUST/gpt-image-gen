@@ -90,6 +90,86 @@ node {baseDir}/scripts/generate.mjs --edit \
   --save ./edited.png
 ```
 
+### 多图参考拼接（图生图扩展）
+
+OpenAI `/v1/images/edits` 端点一次仅支持一张参考图。需要多张参考图时，先用 `scripts/merge_images.py` 拼接为一张合成图，再传给 generate.mjs。
+
+#### 拼接脚本
+
+```bash
+/usr/local/bin/python3 {baseDir}/scripts/merge_images.py \
+  --images <图1> <图2> [<图3> ...] \
+  --titles "<标题A>" "<标题B>" [...] \
+  --save ./merged_ref.png
+```
+
+| 参数 | 必填 | 默认 | 说明 |
+|------|------|------|------|
+| `--images` | 是 | — | 图片路径列表，≥2 张 |
+| `--save` | 是 | — | 输出路径（建议 .png） |
+| `--titles` | 否 | 自动 A/B/C | 每张子图标题，数量须与 --images 一致 |
+| `--width` | 否 | 1024 | 目标宽度 |
+| `--max-height` | 否 | 4096 | 合成图整体最大高度（超出则等比压缩） |
+| `--title-style` | 否 | dark | 标题栏样式：dark（深色底白字）/ light（浅色底深字） |
+
+> **环境**：使用系统 Python `/usr/local/bin/python3`（Pillow 已预装）。报错时执行 `/usr/local/bin/python3 -m pip install Pillow`。
+
+#### 标题生成规则（LLM 职责）
+
+- 用户提供多图 + 说明 → LLM 根据说明为每张图拟定标题，传入 `--titles`
+- 用户提供多图无说明 → LLM 传入 `--titles "A" "B" "C"` 或省略（脚本自动编号）
+- 标题用于：撰写 prompt 时精确指代（如"将图A的背景与图B的主体结合"）
+- 脚本自动添加字母前缀：用户传入"背景"→ 渲染为"A. 背景"
+
+#### 拼接布局
+
+```
+┌──────────────────────────┐
+│    标题栏 A (深色底白字)    │  48px
+├──────────────────────────┤
+│                          │
+│       图片 A (缩放后)      │  自适应高度
+│                          │
+├──────────────────────────┤  2px 分割线
+│    标题栏 B              │
+├──────────────────────────┤
+│       图片 B              │
+└──────────────────────────┘
+```
+
+自适应缩放三层策略：统一宽度 → 单图限高(1200px) → 整体限高(4096px)
+
+#### 两步调用示例
+
+```bash
+# 步骤1：拼接多图
+/usr/local/bin/python3 {baseDir}/scripts/merge_images.py \
+  --images landscape.png portrait.png \
+  --titles "背景风景" "人物主体" \
+  --save ./merged_ref.png
+
+# 步骤2：用合成图进行图生图
+node {baseDir}/scripts/generate.mjs --edit \
+  --reference ./merged_ref.png \
+  --prompt "将图A（背景风景）作为背景，将图B（人物主体）置于其中，保持人物比例" \
+  --save ./final.png
+```
+
+#### 输出协议
+
+拼接脚本遵循与 generate.mjs 相同的 stdout/stderr 分离协议：
+
+- `status: "completed"` → 拼接成功，`image_path` 指向合成图
+- `status: "failed"` / `"invalid_params"` → 失败，转达 `error` + `hint`
+- `type` 字段为 `"image_merge_result"`（与生图的 `"image_gen_result"` 区分）
+
+#### Agent 执行约束（多图拼接流程）
+
+- 两步均为同步阻塞调用，分别等待进程退出后解析 stdout JSON
+- 步骤1失败时不要执行步骤2，直接将 error + hint 转达用户
+- 步骤1成功后，从 `image_path` 字段获取合成图路径，传给步骤2的 `--reference`
+- 步骤2的 prompt 中应使用"图A/图B"指代，与合成图标题对应
+
 ## 参数说明
 
 ### 基础参数
